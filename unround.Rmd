@@ -1,0 +1,215 @@
+---
+title: "A  method for estimating original death counts from data that has been rounded to base 3"
+author: "John Bryant"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Install packages, as required
+
+Load the packages needed to run the calculations, installing the packages if they are not already present. The packages for the demographic estimation are obtained from the Statistics New Zealand github repository; everything else is obtained from CRAN.
+
+```{r}
+for (pkgname in c("readr", "dplyr", "tidyr", "coda", "ggplot2")) {
+    if (!require(pkgname, character.only = TRUE)) {
+        install.packages(pkgname)
+        library(pkgname, character.only = TRUE)
+    }
+}
+
+for (pkgname in c("dembase", "demest")) {
+    if (!require(pkgname, character.only = TRUE)) {
+        devtools::install_github(sprintf("statisticsnz/%s", pkgname))
+        library(pkgname, character.only = TRUE)
+    }
+}
+```
+
+
+## Read in the data, and format as "Counts" objects
+
+The data come from the "Infoshare" database on the Stats NZ website, downloaded on 20 October 2019. 
+
+We format the data as "Counts" objects. These are a data structure used by packages **dembase** and **demest**. They are basically cross-tabulated counts with a bit of metadata.
+
+```{r}
+deaths_rounded <- read_csv("VSD349204_20191020_045554_27.csv",
+                   skip = 1,
+                   n_max = 101 * 2) %>%
+    rename(sex = X1) %>%
+    mutate(sex = fillForward(sex)) %>%
+    rename(age = X2) %>%
+    mutate(age = cleanAgeGroup(age)) %>%
+    gather(key = year, value = count, `2014`:`2018`) %>%
+    dtabs(count ~ age + sex + year) %>%
+    Counts(dimscales = c(year = "Intervals"))
+```
+
+Check out the data:
+```{r}
+summary(deaths_rounded)
+```
+
+```{r}
+plot(deaths_rounded)
+```
+
+
+```{r}
+popn <- read_csv("DPE403905_20191020_045422_74.csv",
+                 skip = 2,
+                 n_max = 91 * 2) %>%
+    rename(sex = X1) %>%
+    mutate(sex = fillForward(sex)) %>%
+    rename(age = X2) %>%
+    mutate(age = cleanAgeGroup(age)) %>%
+    gather(key = year, value = count, `2014`:`2018`) %>%
+    dtabs(count ~ age + sex + year) %>%
+    Counts(dimscales = c(year = "Intervals"))
+```
+
+
+```{r}
+summary(popn)
+```
+
+```{r}
+plot(popn)
+```
+
+Unfortunately, although the open age group for deaths_rounded is 100+, the open age group for population is 90+. We collapse the data for deaths_rounded to match the data for population.
+
+```{r}
+deaths_rounded <- deaths_rounded %>%
+    collapseIntervals(dimension = "age", breaks = 0:90)
+```
+
+```{r}
+subarray(deaths_rounded, age > 85)
+```
+
+
+## Fit a model to the data
+
+We model the (unobserved) unrounded death counts using a hierarchical Poisson model, and use a 'Round3' data model to describe how the unrounded counts are perturbed to create rounded counts. A nice feature of the Round3 model is that it has no unknown parameters. The function `estimateCounts` simultaneously estimates the unrounded death counts, the death rates, and the hyper-parameters in the hierarchical model for death rates.
+
+```{r}
+model <- Model(y ~ Poisson(mean ~ age * sex + year),
+               age ~ DLM(damp = NULL,
+                         covariates = Covariates(infant = TRUE)),
+               age:sex ~ DLM(trend = NULL,
+                             damp = NULL),
+               year ~ DLM(damp = NULL),
+               jump = 0.014)
+data_models <- list(Model(deaths_rounded ~ Round3()))
+datasets <- list(deaths_rounded = deaths_rounded)
+estimateCounts(model = model,
+               y = deaths_rounded + 1,
+               exposure = popn,
+               dataModels = data_models,
+               datasets = datasets,
+               filename = "mortality_model.est",
+               nBurnin = 100000,
+               nSim = 100000,
+               nChain = 4,
+               nThin = 400)
+```
+
+Examine convergence.
+
+```{r}
+options(width = 120)
+fetchSummary("mortality_model.est")
+```
+
+## Obtain posterior distribution for unrounded counts
+
+Normally, our main interest would be in the underlying mortality rates. But in this case, we are interested in the unrounded death counts. We extract them as follows.
+
+```{r}
+deaths_unrounded <- fetch("mortality_model.est",
+                          where = "y")
+```
+
+`deaths_unrounded` consists of 1000 draws from the posterior distribution for the unrounded death counts. Below we show the first 5 iterations for age 0.
+
+```{r}
+subarray(deaths_unrounded, age == "0" & iteration <= 5)
+```
+
+We graph the posterior distribution for ages 2--14 in 2018. First we reshape the unrounded counts.
+
+```{r}
+data_unrounded <- deaths_unrounded %>%
+    subarray(year == "2018") %>%
+    as.data.frame() %>%
+    group_by(age, sex, count) %>%
+    count() %>%
+    group_by(age, sex) %>%
+    mutate(propn = n / sum(n)) %>%
+    ungroup()
+```
+
+Then we reshape the rounded counts.
+
+```{r}
+data_rounded <- deaths_rounded %>%
+    subarray(year == "2018") %>%
+    as.data.frame()
+```
+
+Then we draw the graph.
+
+```{r}
+data <- data_unrounded %>%
+    filter(age %in% 2:14)
+ggplot(data, aes(x = count, y = propn)) +
+    facet_grid(rows = vars(age), cols = vars(sex)) +
+    geom_point(col = "grey") +
+    geom_vline(aes(xintercept = count),
+               data = filter(data_rounded, age %in% 2:14)) +
+    scale_x_continuous(breaks = seq(from = 0, to = 9, by = 3)) +
+    xlab("Death counts") +
+    ylab("Probability")
+    
+```
+
+The dots represent the posterior distribution of the unrounded death counts. The lines represent rounded counts. 
+
+## Extract one set of counts from the posterior distribution
+
+Three possible ways of reducing the posterior distribution to a single set of counts are 
+
+1. take the value with the highest posterior probability for each combination of age, sex, and year,
+1. take the values from a single draw from the posterior, and
+1. independently sample from the posterior, for each combination of age, sex, and year.
+
+Judging by the figure above, Option 1 would probably leave too little variability in the counts. Option 2 might sometimes gives bad results if the particular draw from the posterior distribution was unusual. Option 3 seems like the safest.
+
+Option 3 can be implemented as follows:
+
+```{r}
+deaths_unrounded_single <- deaths_unrounded %>%
+    as.data.frame() %>%
+    group_by(age, sex, year) %>%
+    sample_n(1) %>%
+    ungroup() %>%
+    select(-iteration)
+```
+
+```{r}
+head(deaths_unrounded_single)
+```
+
+The unrounded numbers now show no particular tendency towards being multiples of three:
+
+```{r}
+table(as.integer(deaths_unrounded_single$count) %% 3)
+```
+
+
+
