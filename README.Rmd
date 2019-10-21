@@ -18,7 +18,7 @@ knitr::opts_chunk$set(
 [![Lifecycle status](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://www.tidyverse.org/lifecycle/#experimental)
 <!-- badges: end -->
 
-This repository contains contains code from an initial attempt to use Bayesian methods to guess at the original death counts, using deaths data that have been randomly rounded to base 3. The guesses are informed by (i) a model of the underlying mortality rates, and (ii) a mathematical description of the random-rounding process. For more on the theory, see Chapter 14 of the book [Bayesian Demographic Estimation and Forecasting](www.bdef-book.com).
+This repository contains contains code from an experiment with using Bayesian methods to derive unrounded death counts from deaths counts that have been randomly rounded to base 3. The estimates are informed by (i) a model of the underlying mortality rates, and (ii) a mathematical description of the random-rounding process. For more on the theory, see Chapter 14 of [Bayesian Demographic Estimation and Forecasting](https://www.bdef-book.com).
 
 
 
